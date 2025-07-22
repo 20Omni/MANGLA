@@ -1,85 +1,47 @@
-
 import streamlit as st
 import pandas as pd
 import joblib
-import datetime
-import torch
-from transformers import BertTokenizer, BertForSequenceClassification
-from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Load BERT model and tokenizer
-@st.cache_resource
-def load_bert():
-    tokenizer = BertTokenizer.from_pretrained("bert-task-classifier")
-    model = BertForSequenceClassification.from_pretrained("bert-task-classifier")
-    return tokenizer, model
+# Load all models and encoders
+category_model = joblib.load("svm_task_classifier (1).joblib")
+category_vectorizer = joblib.load("task_tfidf_vectorizer (1).pkl")
+category_label_encoder = joblib.load("task_label_encoder (2).pkl")
 
-tokenizer, bert_model = load_bert()
-bert_model.eval()
+priority_model = joblib.load("priority_xgboost (2).pkl")
+priority_vectorizer = joblib.load("priority_tfidf_vectorizer (2).pkl")
+priority_label_encoder = joblib.load("priority_label_encoder (2).pkl")
 
-# Load XGBoost model and label encoder
-priority_model = joblib.load("priority_xgboost.pkl")
-priority_encoder = joblib.load("priority_label_encoder.pkl")
+# Load dataset for user assignment
+df = pd.read_csv("final_task_dataset_balanced.csv")
 
-# Load Task Label Encoder
-task_label_encoder = joblib.load("task_label_encoder.pkl")
+# Helper: Assign task to user with least tasks
+def assign_user():
+    user_counts = df["assigned_to"].value_counts()
+    return user_counts.idxmin() if not user_counts.empty else "User_1"
 
-# Sample users from your dataset
-users = ["User_1", "User_2", "User_3", "User_4"]
+# Streamlit UI
+st.title("🚀 AI Task Management System")
 
-# Session state to keep workload count
-if "user_workload" not in st.session_state:
-    st.session_state.user_workload = {}
+task_description = st.text_area("📝 Enter task description:")
 
-# Title
-st.title("📋 AI-Powered Task Assignment Dashboard")
+if st.button("Predict & Assign"):
+    if task_description.strip() == "":
+        st.warning("Please enter a task description.")
+    else:
+        # Category Prediction
+        task_vec_cat = category_vectorizer.transform([task_description])
+        category_pred_encoded = category_model.predict(task_vec_cat)[0]
+        category_pred = category_label_encoder.inverse_transform([category_pred_encoded])[0]
 
-# Task Input Form
-with st.form("task_form"):
-    task_desc = st.text_area("📝 Enter Task Description")
-    deadline = st.date_input("📅 Deadline", min_value=datetime.date.today())
-    submitted = st.form_submit_button("🚀 Predict & Assign")
+        # Priority Prediction
+        task_vec_prio = priority_vectorizer.transform([task_description])
+        priority_pred_encoded = priority_model.predict(task_vec_prio)[0]
+        priority_pred = priority_label_encoder.inverse_transform([priority_pred_encoded])[0]
 
-if submitted and task_desc.strip():
-    # --- Priority Prediction with XGBoost ---
-    tfidf = joblib.load("priority_tfidf_vectorizer.pkl")
-    task_vector = tfidf.transform([task_desc])
-    pred_priority_encoded = priority_model.predict(task_vector)[0]
-    pred_priority = priority_encoder.inverse_transform([pred_priority_encoded])[0]
+        # Assign user
+        assigned_user = assign_user()
 
-    # --- Task Classification with BERT ---
-    inputs = tokenizer(task_desc, return_tensors="pt", truncation=True, padding=True, max_length=512)
-    with torch.no_grad():
-        outputs = bert_model(**inputs)
-    logits = outputs.logits
-    predicted_class_id = torch.argmax(logits, dim=1).item()
-    predicted_category = task_label_encoder.inverse_transform([predicted_class_id])[0]
-
-    # --- Workload + Deadline-based Assignment ---
-    today = datetime.date.today()
-    days_left = (deadline - today).days
-    deadline_score = max(0, 10 - days_left)  # Closer deadline = higher penalty
-
-    user_scores = []
-    for user in users:
-        load = st.session_state.user_workload.get(user, 0)
-        score = load + deadline_score
-        user_scores.append((user, score))
-
-    assigned_user = sorted(user_scores, key=lambda x: x[1])[0][0]
-    st.session_state.user_workload[assigned_user] = st.session_state.user_workload.get(assigned_user, 0) + 1
-
-    # --- Display Output ---
-    st.success(f"✅ Task assigned to **{assigned_user}**")
-    st.markdown(f"🔖 **Predicted Category**: `{predicted_category}`")
-    st.markdown(f"🚦 **Predicted Priority**: `{pred_priority}`")
-    st.markdown(f"📅 **Days Until Deadline**: `{days_left}`")
-
-    st.subheader("📊 Current Workload")
-    st.dataframe(pd.DataFrame.from_dict(st.session_state.user_workload, orient="index", columns=["Tasks Assigned"]))
-
-# Reset Button
-if st.button("🔁 Reset Workload"):
-    st.session_state.user_workload = {}
-    st.success("✅ Workload reset successfully!")
-
+        # Show results
+        st.success(f"✅ Predicted Category: **{category_pred}**")
+        st.success(f"📌 Predicted Priority: **{priority_pred}**")
+        st.success(f"👤 Assigned to: **{assigned_user}**")
